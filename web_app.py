@@ -11,6 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from psycopg2 import pool
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
+import regex as re
+from datamodels import *
 
 app = FastAPI()
 app.add_middleware(
@@ -36,152 +38,74 @@ POOL = pool.ThreadedConnectionPool(
     database=GLOBAL_CONFIG["databaseName"],
 )
 
+TOKEN_REGEX = re.compile(r"(?i)([\p{L}]+)|([\.?,;:'’!\-]+)|([\s]+)|([\d]+)")
 
-@dataclass
-class config:
-    """App config"""
+DICO_LABELS: Dict[str, Dict[str, str]] = {
+    "feraud": {
+        "label": "Féraud: Dictionaire critique de la langue française (1787-1788)",
+        "shortLabel": "Féraud (1787-1788)",
+    },
+    "nicot": {
+        "label": "Jean Nicot: Thresor de la langue française (1606)",
+        "shortLabel": "Jean Nicot (1606)",
+    },
+    "acad1694": {
+        "label": "Dictionnaire de L'Académie française 1re édition (1694)",
+        "shortLabel": "Académie française (1694)",
+    },
+    "acad1762": {
+        "label": "Dictionnaire de L'Académie française 4e édition (1762)",
+        "shortLabel": "Académie française (1762)",
+    },
+    "acad1798": {
+        "label": "Dictionnaire de L'Académie française 5e édition (1798)",
+        "shortLabel": "Académie française (1798)",
+    },
+    "acad1835": {
+        "label": "Dictionnaire de L'Académie française 6e édition (1835)",
+        "shortLabel": "Académie française (1835)",
+    },
+    "littre": {
+        "label": "Émile Littré: Dictionnaire de la langue française (1872-1877)",
+        "shortLabel": "Littré (1872-1877)",
+    },
+    "acad1932": {
+        "label": "Dictionnaire de L'Académie française 8e édition (1932-1935)",
+        "shortLabel": "Académie française (1932-1935)",
+    },
+    "tlfi": {
+        "label": "Le Trésor de la Langue Française Informatisé",
+        "shortLabel": "Trésor Langue Française",
+    },
+    "bob": {
+        "label": "BOB: Dictionaire d'argot",
+        "shortLabel": "BOB: Dictionaire d'argot",
+    },
+}
 
-    databaseName: str
-    user: str
-    password: str
-    debug: bool
-    twitterUser: str
-    twitterPassword: str
-    recaptchaSecret: str
+DICO_ORDER: List[str] = [
+    "tlfi",
+    "acad1932",
+    "littre",
+    "acad1835",
+    "acad1798",
+    "feraud",
+    "acad1762",
+    "acad1694",
+    "nicot",
+    "bob",
+]
 
-
-@dataclass
-class wordOfTheDay:
-    """Word of the day"""
-
-    headword: str
-    date: str
-
-
-@dataclass
-class Nym:
-    """Generic nym type"""
-
-    label: str
-    UserSubmit: bool
-    date: str
-
-
-@dataclass
-class Example:
-    """Example for headwords"""
-
-    content: str
-    link: str
-    score: int
-    id: int
-    source: str
-    userSubmit: bool
-    date: str
-
-
-@dataclass
-class Collocates:
-    """Collocates Type"""
-
-    key: str
-    value: int
-
-
-@dataclass
-class NearestNeighbors:
-    """NearestNeighbors Type"""
-
-    word: str
-
-
-@dataclass
-class AutoCompleteHeadword:
-    """AutoCompleteHeadword is just the object in the AutoCompleteList"""
-
-    headword: str
-
-
-@dataclass
-class Wordwheel:
-    """Wordwheel data"""
-
-    words: List[str]
-    startIndex: int
-    endIndex: int
-
-
-@dataclass
-class UserSubmit:
-    """UserSubmit fields"""
-
-    content: str
-    source: str
-    link: str
-    date: str
-
-
-@dataclass
-class RecaptchaResponse:
-    """RecaptchaResponse from Google"""
-
-    success: bool
-    challenge_ts: time
-    hostname: str
-    error_codes: List[str]
-
-
-@dataclass
-class FuzzyResult:
-    """FuzzyResult is the result of fuzzy searching"""
-
-    word: str
-    score: float
-
-
-@dataclass
-class Dictionary:
-    """Dictionary to export"""
-
-    name: str
-    label: str
-    shortLabel: str
-    contentObj: List[Dict[str, str]]
-    show: bool
-
-
-@dataclass
-class DictionaryData:
-    """DictionaryData to export"""
-
-    data: List[Dictionary]
-    totalDicos: int
-    totalEntries: int
-
-
-@dataclass
-class Results:
-    """Results to export"""
-
-    headword: str
-    dictionaries: DictionaryData
-    synonyms: List[Nym]
-    antonyms: List[Nym]
-    examples: List[Example]
-    timeSeries: List[List[float]]
-    collocates: List[Collocates]
-    nearestNeighbors: List
-    fuzzyResults: List[FuzzyResult]
-
-
-@dataclass
-class AutoCompleteList:
-    """AutoCompleteList is the top 10 words"""
-
-    List[AutoCompleteHeadword]
+# TODO: log
 
 
 @app.get("/")
+@app.get("/mot/{word}:path")
+@app.get("/apropos")
+@app.get("/definition")
+@app.get("/exemple")
+@app.get("/synonyme")
+@app.get("/antonyme")
 def home():
     """DVLF landing page"""
     with open("public/dist/index.html", encoding="utf-8") as index_file:
