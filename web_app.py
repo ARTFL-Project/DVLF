@@ -1,18 +1,21 @@
+from datetime import datetime
 from typing import Dict, List, Tuple
+from html import unescape
 
 import orjson
 import psycopg2
 import psycopg2.extras
 import regex as re
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from humps import camelize, decamelize
 from Levenshtein import ratio
 from psycopg2 import pool
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import Response
 from unidecode import unidecode
-from humps import camelize, decamelize
+import requests
+import bleach
 
 from datamodels import *
 
@@ -115,13 +118,15 @@ HEADWORD_LIST, HEADWORD_MAP = get_all_headwords()
 
 
 def load_words_of_the_day() -> Dict[str, str]:
-    """Load words of the day"""
-    with open("words_of_the_day.json", encoding="utf-8") as input:
-        word_list: List[wordOfTheDay] = orjson.loads(input.read())
-    date_to_words: Dict[str, str] = {}
-    for word_element in word_list:
-        date_to_words[word_element.date] = word_element.headword
+    with open("words_of_the_day.json", encoding="utf-8") as words:
+        words_of_the_day: List[Dict[str, str]] = orjson.loads(words.read())
+    date_to_words: Dict[str, str] = {
+        word_element["date"]: word_element["headword"] for word_element in words_of_the_day
+    }
     return date_to_words
+
+
+WORDS_OF_THE_DAY = load_words_of_the_day()
 
 
 def get_similar_headwords(headword: str) -> List[FuzzyResult]:
@@ -235,18 +240,92 @@ def sort_examples(examples: List[Example]) -> List[Example]:
     return ordered_examples
 
 
+def validate_recaptcha(token: str):
+    response = requests.post(
+        "https://www.google.com/recaptcha/api/siteverify",
+        data={
+            "secret": GLOBAL_CONFIG["recaptchaSecret"],
+            "response": token,
+        },
+    )
+    result = response.json()
+    return result.get("success", False)
+
+
+@app.get("/api/vote/{headword}/{example_id}/{vote}")
+def vote(headword: str, example_id: int, vote: str):
+    new_score: int = 0
+    with POOL.getconn() as conn:
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute("SELECT examples FROM headwords WHERE headword=%s", (headword,))
+        examples: List[Dict[str, str | int | bool]] = cursor.fetchone()["examples"]
+
+        new_examples: List[Dict[str, str | int | bool]] = []
+        for example in examples:
+            if example["id"] == example_id:
+                if vote == "up":
+                    example["score"] += 1
+                else:
+                    example["score"] -= 1
+                new_score = example["score"]
+            new_examples.append(example)
+        cursor.execute(
+            "UPDATE headwords SET examples=%s WHERE headword=%s", (orjson.dumps(new_examples).decode("utf-8"), headword)
+        )
+    return {"message": "success", "score": new_score}
+
+
+@app.post("/api/submit")
+def submit_definition(term: str, source: str, link: str, definition: str, recaptcha_token: str):
+    repatcha_response = validate_recaptcha(recaptcha_token)
+    if repatcha_response is False:
+        return {"message": "Recaptcha error"}
+    definition = bleach.clean(definition, tags=["i", "b"], strip=True)
+    definition = unescape(definition)
+    timestamp = str(datetime.now()).split()[0]
+    new_submission = UserSubmit(content=definition, source=source, link=link, date=timestamp)
+    with POOL.getconn() as conn:
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        if term in HEADWORD_MAP:
+            cursor.execute("SELECT user_submit FROM headwords WHERE headword=%s", (term,))
+            row = cursor.fetchone()
+            user_submission = row["user_submit"]
+            user_submission.append(new_submission)
+            cursor.execute("UPDATE headwords SET user_submit=%s WHERE headword=%s", (user_submission, term))
+        else:
+            user_submission: List[UserSubmit] = [new_submission]
+            dictionaries = "{}"
+            synonyms = "[]"
+            antonyms = "[]"
+            examples = "[]"
+            cursor.execute(
+                "INSERT INTO headwords (headword, dictionaries, synonyms, antonyms, user_submit, examples) VALUES (%s, %s, %s, %s, %s, %s)",
+                (term, dictionaries, synonyms, antonyms, user_submission, examples),
+            )
+            HEADWORD_LIST.append(term)
+            HEADWORD_LIST.sort(key=lambda word: word.lower())
+            HEADWORD_MAP = {word: pos for pos, word in enumerate(HEADWORD_LIST)}
+    return {"message": "success"}
+
+
 @app.get("/api/autocomplete/{prefix}")
 def autocomplete(prefix):
     headwords: List[str] = []
     prefix = prefix.strip().lower()
-    prefix_regex = re.compile(rf"(?i)({prefix})(.*)")
+    prefix_regex = re.compile(rf"({prefix})(.*)", re.I)
     with POOL.getconn() as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute(
-            "SELECT headword FROM headwords WHERE headword ~* %s ORDER BY headword LIMIT 10", (f"^{prefix}.*\\M",)
+            "SELECT headword FROM headwords WHERE headword ~* %s ORDER BY headword LIMIT 10", (rf"^{prefix}.*\M",)
         )
-        headwords = [prefix_regex.sub(row["headword"], r'<span class="highlight">\1</span>\2') for row in cursor]
+        headwords = [prefix_regex.sub(r'<span class="highlight">\1</span>\2', row["headword"]) for row in cursor]
     return headwords
+
+
+@app.get("/api/wordoftheday")
+def word_of_the_day():
+    date = str(datetime.now()).split()[0]
+    return WORDS_OF_THE_DAY[date]
 
 
 # TODO: ACCOUNT FOR WHEN YOU ADD A WORD
@@ -270,6 +349,15 @@ def wordwheel(headword: str, startIndex: None | int = None, endIndex: None | int
             endIndex = index + 100
             break
     return Wordwheel(words=temp_headword_list[startIndex:endIndex], startIndex=startIndex, endIndex=endIndex)
+
+
+@app.get("/api/explore/{headword}")
+def explore_vectors(headword):
+    with POOL.getconn() as conn:
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute("SELECT vectors from explore_vectors where headword=%s", (headword,))
+        vectors = cursor.fetchone()["vectors"]
+    return vectors
 
 
 @app.get("/api/mot/{headword}")
