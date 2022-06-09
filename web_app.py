@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 from html import unescape
 
 import orjson
@@ -272,6 +272,7 @@ def vote(headword: str, example_id: int, vote: str):
         cursor.execute(
             "UPDATE headwords SET examples=%s WHERE headword=%s", (orjson.dumps(new_examples).decode("utf-8"), headword)
         )
+        conn.commit()
     return {"message": "success", "score": new_score}
 
 
@@ -280,6 +281,9 @@ def submit_definition(term: str, source: str, link: str, definition: str, recapt
     repatcha_response = validate_recaptcha(recaptcha_token)
     if repatcha_response is False:
         return {"message": "Recaptcha error"}
+    term = bleach.clean(term, tags=[], strip=True)
+    source = bleach.clean(source, tags=[], strip=True)
+    link = bleach.clean(link, tags=[], strip=True)
     definition = bleach.clean(definition, tags=["i", "b"], strip=True)
     definition = unescape(definition)
     timestamp = str(datetime.now()).split()[0]
@@ -291,9 +295,10 @@ def submit_definition(term: str, source: str, link: str, definition: str, recapt
             row = cursor.fetchone()
             user_submission = row["user_submit"]
             user_submission.append(new_submission)
+            user_submission: str = orjson.dumps([new_submission]).decode("utf-8")
             cursor.execute("UPDATE headwords SET user_submit=%s WHERE headword=%s", (user_submission, term))
         else:
-            user_submission: List[UserSubmit] = [new_submission]
+            user_submission: str = orjson.dumps([new_submission]).decode("utf-8")
             dictionaries = "{}"
             synonyms = "[]"
             antonyms = "[]"
@@ -305,7 +310,70 @@ def submit_definition(term: str, source: str, link: str, definition: str, recapt
             HEADWORD_LIST.append(term)
             HEADWORD_LIST.sort(key=lambda word: word.lower())
             HEADWORD_MAP = {word: pos for pos, word in enumerate(HEADWORD_LIST)}
+        conn.commit()
     return {"message": "success"}
+
+
+@app.post("/api/submitExample")
+def submit_example(term: str, source: str, link: str, example: str, recaptcha_token: str):
+    repatcha_response = validate_recaptcha(recaptcha_token)
+    if repatcha_response is False:
+        return {"message": "Recaptcha error"}
+    term = bleach.clean(term, tags=[], strip=True)
+    source = bleach.clean(source, tags=[], strip=True)
+    link = bleach.clean(link, tags=[], strip=True)
+    example = bleach.clean(link, tags=["i", "b"], strip=True)
+    example = unescape(example)
+    if term in HEADWORD_MAP:
+        with POOL.getconn() as conn:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cursor.execute("SELECT examples FROM headwords WHERE headword=%s", (term,))
+            examples = cursor.fetchone()["examples"]
+            new_id = max(example["id"] for example in examples) + 1
+            timestamp = str(datetime.now()).split()[0]
+            examples.append(
+                {
+                    "content": example,
+                    "link": link,
+                    "score": 0,
+                    "source": source,
+                    "date": timestamp,
+                    "userSubmit": True,
+                    "id": new_id,
+                }
+            )
+            cursor.execute(
+                "UPDATE headwords SET examples=%s WHERE headword=%s", (orjson.dumps(examples).decode("utf-8"), term)
+            )
+            conn.commit()
+        return {"message": "success"}
+    return {"message": "error"}
+
+
+@app.get("/api/submitNym")
+def submit_nym(term: str, nym: str, type: str, recaptchaResponse: str):
+    repatcha_response = validate_recaptcha(recaptchaResponse)
+    if repatcha_response is False:
+        return {"message": "Recaptcha error"}
+    term = bleach.clean(term, tags=[], strip=True)
+    nym = bleach.clean(nym, tags=[], strip=True)
+    term = unescape(term)
+    timestamp = str(datetime.now()).split()[0]
+    nym = {"label": unescape(nym), "userSubmit": True, "date": timestamp}
+    if term in HEADWORD_MAP:
+        with POOL.getconn() as conn:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cursor.execute(f"SELECT {type} FROM headwords WHERE headword=%s", (term,))
+            nyms = cursor.fetchone()[type]
+            stored_nyms: Set[str] = {stored_nym["label"] for stored_nym in nyms}
+            if nym in stored_nyms:
+                return {"message": "error"}
+            nyms.append(nym)
+            cursor.execute(
+                f"UPDATE headwords SET {type}=%s WHERE headword=%s", (orjson.dumps(nyms).decode("utf8)"), term)
+            )
+        return {"message": "success"}
+    return {"message": "error"}
 
 
 @app.get("/api/autocomplete/{prefix}")
