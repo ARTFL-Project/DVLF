@@ -12,6 +12,7 @@ from psycopg2 import pool
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 from unidecode import unidecode
+from humps import camelize, decamelize
 
 from datamodels import *
 
@@ -105,7 +106,7 @@ def get_all_headwords() -> Tuple[List[str], Dict[str, int]]:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT headword FROM headwords")
         headwords = [row["headword"] for row in cursor]
-    headwords.sort()
+    headwords.sort(key=lambda word: word.lower())
     headword_hash: Dict[str, int] = {word: pos for pos, word in enumerate(headwords)}
     return headwords, headword_hash
 
@@ -131,29 +132,24 @@ def get_similar_headwords(headword: str) -> List[FuzzyResult]:
         score = ratio(norm_headword, norm_word)
         if score >= 0.7 and score < 1.0:
             results.append(FuzzyResult(word, score))
-    results.sort(key=lambda x: x.Score, reverse=True)
+    results.sort(key=lambda x: x.score, reverse=True)
     return results
 
 
-def highlight_examples(examples: List[Example], query_term: str) -> List[Example]:
+def highlight_examples(examples: List[Dict[str, str | int | bool]], query_term: str) -> List[Example]:
     forms: List[str] = [query_term]
     with POOL.getconn() as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT headword FROM word2lemma WHERE lemma=%s", (query_term,))
         for row in cursor:
             forms.append(row["headword"])
-    form_regex = re.compile(rf"(?i)^({'|'.join(forms)})$")
+    form_regex = re.compile(rf"\b({'|'.join(forms)})\b", re.IGNORECASE)
     new_examples: List[Example] = []
     for example in examples:
-        new_content: List[str] = []
-        matches = form_regex.findall(example.content)
+        matches = set(form_regex.findall(example["content"]))
         for match in matches:
-            if form_regex.search(match):
-                new_content.append(f'<span class="highlight">{match}</span>')
-            else:
-                new_content.append(match)
-        example.content = "".join(new_content)
-        new_examples.append(example)
+            example["content"] = example["content"].replace(match, f'<span class="highlight">{match}</span>')
+        new_examples.append(Example(**camelize(example)))
     return new_examples
 
 
@@ -164,7 +160,7 @@ def order_dictionaries(dictionaries: Dict[str, List[str]], user_submissions: Lis
     total_dicos = 0
     new_dicos: List[Dictionary] = []
     for dico in DICO_ORDER:
-        if len(dictionaries[dico]) == 0:
+        if dico not in dictionaries or len(dictionaries[dico]) == 0:
             continue
         total_dicos += 1
         displayed += 1
@@ -219,6 +215,26 @@ def order_dictionaries(dictionaries: Dict[str, List[str]], user_submissions: Lis
     return all_dictionaries
 
 
+def sort_examples(examples: List[Example]) -> List[Example]:
+    """Sort examples"""
+    ordered_examples: List[Example] = []
+    other_examples: List[Example] = []
+    user_examples_with_no_score: List[Example] = []
+    for example in examples:
+        if example.score > 0:
+            ordered_examples.append(example)
+        elif example.userSubmit and example.score == 0:
+            user_examples_with_no_score.append(example)
+        elif example.score == 0:
+            other_examples.append(example)
+    ordered_examples.sort(key=lambda example: example.id)
+    ordered_examples.extend(user_examples_with_no_score)
+    ordered_examples.extend(other_examples)
+    if len(ordered_examples) > 30:
+        return ordered_examples[:30]
+    return ordered_examples
+
+
 @app.get("/api/autocomplete/{prefix}")
 def autocomplete(prefix):
     headwords: List[str] = []
@@ -231,6 +247,29 @@ def autocomplete(prefix):
         )
         headwords = [prefix_regex.sub(row["headword"], r'<span class="highlight">\1</span>\2') for row in cursor]
     return headwords
+
+
+# TODO: ACCOUNT FOR WHEN YOU ADD A WORD
+@app.get("/api/wordwheel")
+def wordwheel(headword: str, startIndex: None | int = None, endIndex: None | int = None):
+    if headword in HEADWORD_MAP:
+        index = HEADWORD_MAP[headword]
+        startIndex = index - 100
+        if startIndex < 0:
+            startIndex = 0
+        endIndex = index + 100
+        if endIndex > len(HEADWORD_LIST):
+            endIndex = len(HEADWORD_LIST) - 1
+        return Wordwheel(words=HEADWORD_LIST[startIndex:endIndex], startIndex=startIndex, endIndex=endIndex)
+    temp_headword_list = HEADWORD_LIST[:]
+    temp_headword_list.append(headword)
+    temp_headword_list.sort()
+    for index, word in enumerate(temp_headword_list):
+        if word == headword:
+            startIndex = index - 99
+            endIndex = index + 100
+            break
+    return Wordwheel(words=temp_headword_list[startIndex:endIndex], startIndex=startIndex, endIndex=endIndex)
 
 
 @app.get("/api/mot/{headword}")
@@ -247,10 +286,10 @@ def query_headword(headword: str):
             fuzzy_results = get_similar_headwords(headword)
             return Results(fuzzyResults=fuzzy_results)
         highlighted_examples = highlight_examples(row["examples"], headword)
-        sorted_examples = sorted(highlighted_examples)
+        sorted_examples = sort_examples(highlighted_examples)
         all_dictionaries = order_dictionaries(row["dictionaries"], row["user_submit"])
         fuzzy_results: List[FuzzyResult] = []
-        if len(all_dictionaries) < 2:
+        if all_dictionaries.totalEntries < 2:
             fuzzy_results = get_similar_headwords(headword)
         results = Results(
             headword=headword,
@@ -259,7 +298,7 @@ def query_headword(headword: str):
             antonyms=row["antonyms"],
             examples=sorted_examples,
             timeSeries=row["time_series"],
-            collocates=row["collocations"],
+            collocates=decamelize(row["collocations"]),
             nearestNeighbors=row["nearest_neighbors"],
             fuzzyResults=fuzzy_results,
         )
