@@ -11,9 +11,4 @@ PORT=443
 KEYFILE=/etc/letsencrypt/live/mirabeau.lib.uchicago.edu/privkey.pem
 CERTFILE=/etc/letsencrypt/live/mirabeau.lib.uchicago.edu/fullchain.pem
 
-if [ -z "$KEYFILE" ]
-then
-    gunicorn -k uvicorn.workers.UvicornWorker -b :$PORT -w 4 --access-logfile=/DVLF/api_server/access.log --error-logfile=/DVLF/api_server/error.log --chdir /DVLF web_app:app
-else
-    gunicorn --keyfile=$KEYFILE --certfile=$CERTFILE -k uvicorn.workers.UvicornWorker -b :$PORT -w 4 --access-logfile=/DVLF/api_server/access.log --error-logfile=/DVLF/api_server/error.log --chdir /DVLF web_app:app
-fi
+gunicorn --keyfile=$KEYFILE --certfile=$CERTFILE -k uvicorn.workers.UvicornWorker -b :$PORT -w 4 --access-logfile=/DVLF/api_server/access.log --error-logfile=/DVLF/api_server/error.log --chdir /DVLF web_app:app

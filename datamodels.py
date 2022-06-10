@@ -5,20 +5,11 @@ from typing import Dict, List, Tuple
 import orjson
 import psycopg2
 import psycopg2.extras
-from psycopg2 import pool
 from pydantic import BaseModel
 
 
 with open("config.json", encoding="utf-8") as config_file:
     GLOBAL_CONFIG = orjson.loads(config_file.read())
-
-POOL = pool.ThreadedConnectionPool(
-    1,
-    100,
-    user=GLOBAL_CONFIG["user"],
-    password=GLOBAL_CONFIG["password"],
-    database=GLOBAL_CONFIG["databaseName"],
-)
 
 
 DICO_LABELS: Dict[str, Dict[str, str]] = {
@@ -81,7 +72,11 @@ DICO_ORDER: List[str] = [
 def get_all_headwords() -> Tuple[List[str], Dict[str, int]]:
     """Get all headwords"""
     headwords: List[str]
-    with POOL.getconn() as conn:
+    with psycopg2.connect(
+        user=GLOBAL_CONFIG["user"],
+        password=GLOBAL_CONFIG["password"],
+        database=GLOBAL_CONFIG["databaseName"],
+    ) as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT headword FROM headwords")
         headwords = [row["headword"] for row in cursor]

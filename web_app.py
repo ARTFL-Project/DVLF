@@ -1,42 +1,41 @@
+"""DVLF WEB Application"""
+
+import re
 from datetime import datetime
-from typing import Dict, List, Set
 from html import unescape
+from typing import Dict, List, Set
 
-
+import bleach
 import orjson
-
 import psycopg2
 import psycopg2.extras
-import regex as re
+import requests
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from humps import camelize, decamelize
 from Levenshtein import ratio
-
+from psycopg2 import pool
 from starlette.middleware.cors import CORSMiddleware
 from unidecode import unidecode
-import requests
-import bleach
 
 from datamodels import (
-    Example,
-    FuzzyResult,
-    UserSubmit,
-    DictionaryData,
-    Dictionary,
-    ExampleSubmission,
-    NymSubmission,
-    Definition,
-    Results,
-    Wordwheel,
-    DICO_ORDER,
     DICO_LABELS,
+    DICO_ORDER,
     GLOBAL_CONFIG,
-    POOL,
     HEADWORD_LIST,
     HEADWORD_MAP,
     WORDS_OF_THE_DAY,
+    Definition,
+    Dictionary,
+    DictionaryData,
+    Example,
+    ExampleSubmission,
+    FuzzyResult,
+    NymSubmission,
+    Results,
+    UserSubmit,
+    Wordwheel,
 )
 
 app = FastAPI()
@@ -53,7 +52,13 @@ app.mount("/js", StaticFiles(directory="public/dist/js"), name="js")
 app.mount("/img", StaticFiles(directory="public/dist/img"), name="img")
 
 
-TOKEN_REGEX = re.compile(r"(?i)([\p{L}]+)|([\.?,;:'’!\-]+)|([\s]+)|([\d]+)")
+POOL = pool.ThreadedConnectionPool(
+    1,
+    100,
+    user=GLOBAL_CONFIG["user"],
+    password=GLOBAL_CONFIG["password"],
+    database=GLOBAL_CONFIG["databaseName"],
+)
 
 
 def get_similar_headwords(headword: str) -> List[FuzzyResult]:
@@ -318,7 +323,13 @@ def autocomplete(prefix):
         cursor.execute(
             "SELECT headword FROM headwords WHERE headword ~* %s ORDER BY headword LIMIT 10", (rf"^{prefix}.*\M",)
         )
-        headwords = [prefix_regex.sub(r'<span class="highlight">\1</span>\2', row["headword"]) for row in cursor]
+        headwords = [
+            {
+                "headword": row["headword"],
+                "html": prefix_regex.sub(r'<span class="highlight">\1</span>\2', row["headword"]),
+            }
+            for row in cursor
+        ]
     return headwords
 
 
@@ -328,27 +339,37 @@ def word_of_the_day():
     return WORDS_OF_THE_DAY[date]
 
 
-# TODO: ACCOUNT FOR WHEN YOU ADD A WORD
 @app.get("/api/wordwheel")
-def wordwheel(headword: str, startIndex: None | int = None, endIndex: None | int = None):
-    if headword in HEADWORD_MAP:
-        index = HEADWORD_MAP[headword]
-        startIndex = index - 100
-        if startIndex < 0:
-            startIndex = 0
-        endIndex = index + 100
-        if endIndex > len(HEADWORD_LIST):
-            endIndex = len(HEADWORD_LIST) - 1
-        return Wordwheel(words=HEADWORD_LIST[startIndex:endIndex], startIndex=startIndex, endIndex=endIndex)
-    temp_headword_list = HEADWORD_LIST[:]
-    temp_headword_list.append(headword)
-    temp_headword_list.sort()
-    for index, word in enumerate(temp_headword_list):
-        if word == headword:
-            startIndex = index - 99
+def wordwheel(
+    headword: None | str = None, startIndex: None | int = None, endIndex: None | int = None, position: None | str = None
+):
+    if headword is not None:
+        if headword in HEADWORD_MAP:
+            index = HEADWORD_MAP[headword]
+            startIndex = index - 100
+            if startIndex < 0:
+                startIndex = 0
             endIndex = index + 100
-            break
-    return Wordwheel(words=temp_headword_list[startIndex:endIndex], startIndex=startIndex, endIndex=endIndex)
+            if endIndex > len(HEADWORD_LIST):
+                endIndex = len(HEADWORD_LIST) - 1
+            return Wordwheel(words=HEADWORD_LIST[startIndex:endIndex], startIndex=startIndex, endIndex=endIndex)
+        temp_headword_list = HEADWORD_LIST[:]
+        temp_headword_list.append(headword)
+        temp_headword_list.sort()
+        for index, word in enumerate(temp_headword_list):
+            if word == headword:
+                startIndex = index - 99
+                endIndex = index + 100
+                break
+        return Wordwheel(words=temp_headword_list[startIndex:endIndex], startIndex=startIndex, endIndex=endIndex)
+    elif position == "before":
+        index_before = startIndex - 500
+        if index_before < 0:
+            index_before = 0
+        return Wordwheel(words=HEADWORD_LIST[index_before:startIndex], startIndex=index_before, endIndex=endIndex)
+    else:
+        index_after = endIndex + 500
+        return Wordwheel(words=HEADWORD_LIST[endIndex:index_after], startIndex=startIndex, endIndex=index_after)
 
 
 @app.get("/api/explore/{headword}")
