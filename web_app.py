@@ -1,8 +1,10 @@
 from datetime import datetime
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Set
 from html import unescape
 
+
 import orjson
+
 import psycopg2
 import psycopg2.extras
 import regex as re
@@ -11,13 +13,31 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from humps import camelize, decamelize
 from Levenshtein import ratio
-from psycopg2 import pool
+
 from starlette.middleware.cors import CORSMiddleware
 from unidecode import unidecode
 import requests
 import bleach
 
-from datamodels import *
+from datamodels import (
+    Example,
+    FuzzyResult,
+    UserSubmit,
+    DictionaryData,
+    Dictionary,
+    ExampleSubmission,
+    NymSubmission,
+    Definition,
+    Results,
+    Wordwheel,
+    DICO_ORDER,
+    DICO_LABELS,
+    GLOBAL_CONFIG,
+    POOL,
+    HEADWORD_LIST,
+    HEADWORD_MAP,
+    WORDS_OF_THE_DAY,
+)
 
 app = FastAPI()
 app.add_middleware(
@@ -32,101 +52,8 @@ app.mount("/css", StaticFiles(directory="public/dist/css"), name="css")
 app.mount("/js", StaticFiles(directory="public/dist/js"), name="js")
 app.mount("/img", StaticFiles(directory="public/dist/img"), name="img")
 
-with open("config.json", encoding="utf-8") as config_file:
-    GLOBAL_CONFIG = orjson.loads(config_file.read())
-
-POOL = pool.ThreadedConnectionPool(
-    1,
-    100,
-    user=GLOBAL_CONFIG["user"],
-    password=GLOBAL_CONFIG["password"],
-    database=GLOBAL_CONFIG["databaseName"],
-)
 
 TOKEN_REGEX = re.compile(r"(?i)([\p{L}]+)|([\.?,;:'’!\-]+)|([\s]+)|([\d]+)")
-
-DICO_LABELS: Dict[str, Dict[str, str]] = {
-    "feraud": {
-        "label": "Féraud: Dictionaire critique de la langue française (1787-1788)",
-        "shortLabel": "Féraud (1787-1788)",
-    },
-    "nicot": {
-        "label": "Jean Nicot: Thresor de la langue française (1606)",
-        "shortLabel": "Jean Nicot (1606)",
-    },
-    "acad1694": {
-        "label": "Dictionnaire de L'Académie française 1re édition (1694)",
-        "shortLabel": "Académie française (1694)",
-    },
-    "acad1762": {
-        "label": "Dictionnaire de L'Académie française 4e édition (1762)",
-        "shortLabel": "Académie française (1762)",
-    },
-    "acad1798": {
-        "label": "Dictionnaire de L'Académie française 5e édition (1798)",
-        "shortLabel": "Académie française (1798)",
-    },
-    "acad1835": {
-        "label": "Dictionnaire de L'Académie française 6e édition (1835)",
-        "shortLabel": "Académie française (1835)",
-    },
-    "littre": {
-        "label": "Émile Littré: Dictionnaire de la langue française (1872-1877)",
-        "shortLabel": "Littré (1872-1877)",
-    },
-    "acad1932": {
-        "label": "Dictionnaire de L'Académie française 8e édition (1932-1935)",
-        "shortLabel": "Académie française (1932-1935)",
-    },
-    "tlfi": {
-        "label": "Le Trésor de la Langue Française Informatisé",
-        "shortLabel": "Trésor Langue Française",
-    },
-    "bob": {
-        "label": "BOB: Dictionaire d'argot",
-        "shortLabel": "BOB: Dictionaire d'argot",
-    },
-}
-
-DICO_ORDER: List[str] = [
-    "tlfi",
-    "acad1932",
-    "littre",
-    "acad1835",
-    "acad1798",
-    "feraud",
-    "acad1762",
-    "acad1694",
-    "nicot",
-    "bob",
-]
-
-
-def get_all_headwords() -> Tuple[List[str], Dict[str, int]]:
-    """Get all headwords"""
-    headwords: List[str]
-    with POOL.getconn() as conn:
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cursor.execute("SELECT headword FROM headwords")
-        headwords = [row["headword"] for row in cursor]
-    headwords.sort(key=lambda word: word.lower())
-    headword_hash: Dict[str, int] = {word: pos for pos, word in enumerate(headwords)}
-    return headwords, headword_hash
-
-
-HEADWORD_LIST, HEADWORD_MAP = get_all_headwords()
-
-
-def load_words_of_the_day() -> Dict[str, str]:
-    with open("words_of_the_day.json", encoding="utf-8") as words:
-        words_of_the_day: List[Dict[str, str]] = orjson.loads(words.read())
-    date_to_words: Dict[str, str] = {
-        word_element["date"]: word_element["headword"] for word_element in words_of_the_day
-    }
-    return date_to_words
-
-
-WORDS_OF_THE_DAY = load_words_of_the_day()
 
 
 def get_similar_headwords(headword: str) -> List[FuzzyResult]:
@@ -197,7 +124,9 @@ def order_dictionaries(dictionaries: Dict[str, List[str]], user_submissions: Lis
             show = False
         content: List[Dict[str, str]] = []
         for entry in user_submissions:
-            content.append({"content": entry.Content, "source": entry.Source, "link": entry.Link, "date": entry.Date})
+            content.append(
+                {"content": entry["content"], "source": entry["source"], "link": entry["link"], "date": entry["date"]}
+            )
         new_dicos.append(
             Dictionary(
                 name="userSubmit",
@@ -277,14 +206,15 @@ def vote(headword: str, example_id: int, vote: str):
 
 
 @app.post("/api/submit")
-def submit_definition(term: str, source: str, link: str, definition: str, recaptcha_token: str):
-    repatcha_response = validate_recaptcha(recaptcha_token)
+def submit_definition(definition: Definition):
+    global HEADWORD_MAP
+    repatcha_response = validate_recaptcha(definition.recaptchaResponse)
     if repatcha_response is False:
         return {"message": "Recaptcha error"}
-    term = bleach.clean(term, tags=[], strip=True)
-    source = bleach.clean(source, tags=[], strip=True)
-    link = bleach.clean(link, tags=[], strip=True)
-    definition = bleach.clean(definition, tags=["i", "b"], strip=True)
+    term = bleach.clean(definition.term, tags=[], strip=True)
+    source = bleach.clean(definition.source, tags=[], strip=True)
+    link = bleach.clean(definition.link, tags=[], strip=True)
+    definition = bleach.clean(definition.definition, tags=["i", "b"], strip=True)
     definition = unescape(definition)
     timestamp = str(datetime.now()).split()[0]
     new_submission = UserSubmit(content=definition, source=source, link=link, date=timestamp)
@@ -295,8 +225,10 @@ def submit_definition(term: str, source: str, link: str, definition: str, recapt
             row = cursor.fetchone()
             user_submission = row["user_submit"]
             user_submission.append(new_submission)
-            user_submission: str = orjson.dumps([new_submission]).decode("utf-8")
-            cursor.execute("UPDATE headwords SET user_submit=%s WHERE headword=%s", (user_submission, term))
+            cursor.execute(
+                "UPDATE headwords SET user_submit=%s WHERE headword=%s",
+                (orjson.dumps(user_submission).decode("utf-8"), term),
+            )
         else:
             user_submission: str = orjson.dumps([new_submission]).decode("utf-8")
             dictionaries = "{}"
@@ -315,14 +247,14 @@ def submit_definition(term: str, source: str, link: str, definition: str, recapt
 
 
 @app.post("/api/submitExample")
-def submit_example(term: str, source: str, link: str, example: str, recaptcha_token: str):
-    repatcha_response = validate_recaptcha(recaptcha_token)
+def submit_example(payload: ExampleSubmission):
+    repatcha_response = validate_recaptcha(payload.recaptchaResponse)
     if repatcha_response is False:
         return {"message": "Recaptcha error"}
-    term = bleach.clean(term, tags=[], strip=True)
-    source = bleach.clean(source, tags=[], strip=True)
-    link = bleach.clean(link, tags=[], strip=True)
-    example = bleach.clean(link, tags=["i", "b"], strip=True)
+    term = bleach.clean(payload.term, tags=[], strip=True)
+    source = bleach.clean(payload.source, tags=[], strip=True)
+    link = bleach.clean(payload.link, tags=[], strip=True)
+    example = bleach.clean(payload.example, tags=["i", "b"], strip=True)
     example = unescape(example)
     if term in HEADWORD_MAP:
         with POOL.getconn() as conn:
@@ -350,27 +282,27 @@ def submit_example(term: str, source: str, link: str, example: str, recaptcha_to
     return {"message": "error"}
 
 
-@app.get("/api/submitNym")
-def submit_nym(term: str, nym: str, type: str, recaptchaResponse: str):
-    repatcha_response = validate_recaptcha(recaptchaResponse)
+@app.post("/api/submitNym")
+def submit_nym(payload: NymSubmission):
+    repatcha_response = validate_recaptcha(payload.recaptchaResponse)
     if repatcha_response is False:
         return {"message": "Recaptcha error"}
-    term = bleach.clean(term, tags=[], strip=True)
-    nym = bleach.clean(nym, tags=[], strip=True)
+    term = bleach.clean(payload.term, tags=[], strip=True)
+    nym = bleach.clean(payload.nym, tags=[], strip=True)
     term = unescape(term)
     timestamp = str(datetime.now()).split()[0]
-    nym = {"label": unescape(nym), "userSubmit": True, "date": timestamp}
+    nym_submission = {"label": unescape(nym), "userSubmit": True, "date": timestamp}
     if term in HEADWORD_MAP:
         with POOL.getconn() as conn:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            cursor.execute(f"SELECT {type} FROM headwords WHERE headword=%s", (term,))
-            nyms = cursor.fetchone()[type]
+            cursor.execute(f"SELECT {payload.type} FROM headwords WHERE headword=%s", (term,))
+            nyms = cursor.fetchone()[payload.type]
             stored_nyms: Set[str] = {stored_nym["label"] for stored_nym in nyms}
             if nym in stored_nyms:
                 return {"message": "error"}
-            nyms.append(nym)
+            nyms.append(nym_submission)
             cursor.execute(
-                f"UPDATE headwords SET {type}=%s WHERE headword=%s", (orjson.dumps(nyms).decode("utf8)"), term)
+                f"UPDATE headwords SET {payload.type}=%s WHERE headword=%s", (orjson.dumps(nyms).decode("utf8)"), term)
             )
         return {"message": "success"}
     return {"message": "error"}
@@ -459,9 +391,6 @@ def query_headword(headword: str):
             fuzzyResults=fuzzy_results,
         )
     return results
-
-
-# TODO: log
 
 
 @app.get("/")
