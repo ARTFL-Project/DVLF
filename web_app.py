@@ -221,6 +221,8 @@ def submit_definition(definition: Definition):
     term = bleach.clean(definition.term, tags=[], strip=True)
     source = bleach.clean(definition.source, tags=[], strip=True)
     link = bleach.clean(definition.link, tags=[], strip=True)
+    if not re.search(r"https?:\/\/", link):
+        link = f"https://{link}"
     definition = bleach.clean(definition.definition, tags=["i", "b"], strip=True)
     definition = unescape(definition)
     timestamp = str(datetime.now()).split()[0]
@@ -262,6 +264,8 @@ def submit_example(payload: ExampleSubmission):
     term = bleach.clean(payload.term, tags=[], strip=True)
     source = bleach.clean(payload.source, tags=[], strip=True)
     link = bleach.clean(payload.link, tags=[], strip=True)
+    if not re.search(r"https?:\/\/", link):
+        link = f"https://{link}"
     example = bleach.clean(payload.example, tags=["i", "b"], strip=True)
     example = unescape(example)
     if term in HEADWORD_MAP:

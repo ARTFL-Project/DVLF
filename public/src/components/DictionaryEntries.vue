@@ -54,7 +54,7 @@
                     >
                         <div v-html="entry.content"></div>
                         <div v-if="dico.name == 'userSubmit' && entry.link.length > 0">
-                            Source: <a :href="entry.link" target="_blank">{{ entry.source }}</a>
+                            Source: <a :href="validateLink(entry.link)" target="_blank">{{ entry.source }}</a>
                         </div>
                         <div class="example-source" v-if="entry.date">Contribuée le {{ entry.date }}</div>
                         <hr
@@ -119,6 +119,12 @@ export default {
                 arrows.querySelector(".down-arrow").style.display = "none";
                 arrows.querySelector(".right-arrow").style.display = "initial";
             }
+        },
+        validateLink(link) {
+            if (link.search(/^https?:\/\//) == -1) {
+                link = `https://${link}`;
+            }
+            return link;
         },
     },
 };
