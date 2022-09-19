@@ -15,7 +15,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from humps import camelize, decamelize
 from Levenshtein import ratio
-from psycopg2 import pool
 from starlette.middleware.cors import CORSMiddleware
 from unidecode import unidecode
 
@@ -52,15 +51,6 @@ app.mount("/js", StaticFiles(directory="public/dist/js"), name="js")
 app.mount("/img", StaticFiles(directory="public/dist/img"), name="img")
 
 
-POOL = pool.ThreadedConnectionPool(
-    1,
-    100,
-    user=GLOBAL_CONFIG["user"],
-    password=GLOBAL_CONFIG["password"],
-    database=GLOBAL_CONFIG["databaseName"],
-)
-
-
 def get_similar_headwords(headword: str) -> List[FuzzyResult]:
     results: List[FuzzyResult] = []
     norm_headword = unidecode(headword)
@@ -75,7 +65,9 @@ def get_similar_headwords(headword: str) -> List[FuzzyResult]:
 
 def highlight_examples(examples: List[Dict[str, str | int | bool]], query_term: str) -> List[Example]:
     forms: List[str] = [query_term]
-    with POOL.getconn() as conn:
+    with psycopg2.connect(
+        user=GLOBAL_CONFIG["user"], password=GLOBAL_CONFIG["password"], database=GLOBAL_CONFIG["databaseName"]
+    ) as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT headword FROM word2lemma WHERE lemma=%s", (query_term,))
         for row in cursor:
@@ -189,7 +181,9 @@ def validate_recaptcha(token: str):
 @app.get("/api/vote/{headword}/{example_id}/{vote}")
 def vote(headword: str, example_id: int, vote: str):
     new_score: int = 0
-    with POOL.getconn() as conn:
+    with psycopg2.connect(
+        user=GLOBAL_CONFIG["user"], password=GLOBAL_CONFIG["password"], database=GLOBAL_CONFIG["databaseName"]
+    ) as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT examples FROM headwords WHERE headword=%s", (headword,))
         examples: List[Dict[str, str | int | bool]] = cursor.fetchone()["examples"]
@@ -219,11 +213,15 @@ def submit_definition(definition: Definition):
     term = bleach.clean(definition.term, tags=[], strip=True)
     source = bleach.clean(definition.source, tags=[], strip=True)
     link = bleach.clean(definition.link, tags=[], strip=True)
+    if not re.search(r"https?:\/\/", link):
+        link = f"https://{link}"
     definition = bleach.clean(definition.definition, tags=["i", "b"], strip=True)
     definition = unescape(definition)
     timestamp = str(datetime.now()).split()[0]
     new_submission = UserSubmit(content=definition, source=source, link=link, date=timestamp)
-    with POOL.getconn() as conn:
+    with psycopg2.connect(
+        user=GLOBAL_CONFIG["user"], password=GLOBAL_CONFIG["password"], database=GLOBAL_CONFIG["databaseName"]
+    ) as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         if term in HEADWORD_MAP:
             cursor.execute("SELECT user_submit FROM headwords WHERE headword=%s", (term,))
@@ -259,10 +257,14 @@ def submit_example(payload: ExampleSubmission):
     term = bleach.clean(payload.term, tags=[], strip=True)
     source = bleach.clean(payload.source, tags=[], strip=True)
     link = bleach.clean(payload.link, tags=[], strip=True)
+    if not re.search(r"https?:\/\/", link):
+        link = f"https://{link}"
     example = bleach.clean(payload.example, tags=["i", "b"], strip=True)
     example = unescape(example)
     if term in HEADWORD_MAP:
-        with POOL.getconn() as conn:
+        with psycopg2.connect(
+            user=GLOBAL_CONFIG["user"], password=GLOBAL_CONFIG["password"], database=GLOBAL_CONFIG["databaseName"]
+        ) as conn:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
             cursor.execute("SELECT examples FROM headwords WHERE headword=%s", (term,))
             examples = cursor.fetchone()["examples"]
@@ -298,7 +300,9 @@ def submit_nym(payload: NymSubmission):
     timestamp = str(datetime.now()).split()[0]
     nym_submission = {"label": unescape(nym), "userSubmit": True, "date": timestamp}
     if term in HEADWORD_MAP:
-        with POOL.getconn() as conn:
+        with psycopg2.connect(
+            user=GLOBAL_CONFIG["user"], password=GLOBAL_CONFIG["password"], database=GLOBAL_CONFIG["databaseName"]
+        ) as conn:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
             cursor.execute(f"SELECT {payload.type} FROM headwords WHERE headword=%s", (term,))
             nyms = cursor.fetchone()[payload.type]
@@ -318,7 +322,9 @@ def autocomplete(prefix):
     headwords: List[str] = []
     prefix = prefix.strip().lower()
     prefix_regex = re.compile(rf"({prefix})(.*)", re.I)
-    with POOL.getconn() as conn:
+    with psycopg2.connect(
+        user=GLOBAL_CONFIG["user"], password=GLOBAL_CONFIG["password"], database=GLOBAL_CONFIG["databaseName"]
+    ) as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute(
             "SELECT headword FROM headwords WHERE headword ~* %s ORDER BY headword LIMIT 10", (rf"^{prefix}.*\M",)
@@ -374,17 +380,24 @@ def wordwheel(
 
 @app.get("/api/explore/{headword}")
 def explore_vectors(headword):
-    with POOL.getconn() as conn:
+    with psycopg2.connect(
+        user=GLOBAL_CONFIG["user"], password=GLOBAL_CONFIG["password"], database=GLOBAL_CONFIG["databaseName"]
+    ) as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT vectors from explore_vectors where headword=%s", (headword,))
-        vectors = cursor.fetchone()["vectors"]
+        results = cursor.fetchone()
+        if results is None:
+            return {1600: [], 1700: [], 1800: [], 1900: []}
+        vectors = results["vectors"]
     return vectors
 
 
 @app.get("/api/mot/{headword}")
 def query_headword(headword: str):
     results: Results
-    with POOL.getconn() as conn:
+    with psycopg2.connect(
+        user=GLOBAL_CONFIG["user"], password=GLOBAL_CONFIG["password"], database=GLOBAL_CONFIG["databaseName"]
+    ) as conn:
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute(
             "SELECT user_submit, dictionaries, synonyms, antonyms, examples, time_series, collocations, nearest_neighbors FROM headwords WHERE headword=%s",
