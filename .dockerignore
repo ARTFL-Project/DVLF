@@ -1,0 +1,11 @@
+# secrets never enter the build context, let alone the image
+config.json
+
+# rebuilt by the web stage; shipping the old one would defeat the point
+public/dist/
+public/node_modules/
+
+.git/
+api_server/
+__pycache__/
+*.pyc
