@@ -1,0 +1,9 @@
+{
+    "debug": false,
+    "databaseName": "dvlf",
+    "user": "dvlf",
+    "password": "CHANGE-ME",
+    "twitterUser": "",
+    "twitterPassword": "",
+    "recaptchaSecret": "CHANGE-ME"
+}
