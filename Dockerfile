@@ -22,10 +22,18 @@ COPY public/ ./
 # runtime. The default reproduces the production bundle; the staging build overrides it,
 # otherwise a browser pointed at staging silently exercises production (MIGRATION.md 5.7).
 ARG API_SERVER=https://dvlf.uchicago.edu
+
+# The reCAPTCHA *site* key is public and is likewise compiled in. Staging needs its own
+# key pair, because a reCAPTCHA key is tied to its allowed domains and its secret cannot
+# be duplicated: rotating production's secret to share it would break production until
+# cutover. A separate staging key decouples the two entirely.
+ARG RECAPTCHA_KEY=6LfhfycTAAAAAId87HWFIW-N8cShdp6O8fpAMK8h
+
 # vue-cli-service does not exit when it has finished; build-frontend.sh handles that and
 # verifies the artefacts. See the comments in that script.
 COPY build-frontend.sh /usr/local/bin/build-frontend.sh
 RUN sed -i "s|\"apiServer\": \".*\"|\"apiServer\": \"${API_SERVER}\"|" appConfig.json \
+ && sed -i "s|\"recaptchaKey\": \".*\"|\"recaptchaKey\": \"${RECAPTCHA_KEY}\"|" appConfig.json \
  && cat appConfig.json \
  && sh /usr/local/bin/build-frontend.sh
 
