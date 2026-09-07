@@ -52,7 +52,13 @@ RUN echo "rebuild: $REBUILD_DATE" \
 
 # initdb calls getpwuid(), so the runtime uid has to exist in /etc/passwd. Nothing in
 # this image runs as root, so there is no gosu and no privilege drop at runtime.
-RUN groupadd -g 999 dvlf && useradd -u 999 -g 999 -M -s /usr/sbin/nologin dvlf
+#
+# 480 is deliberate and matches a real `dvlf` system account on the host, so that the
+# bind-mounted database directory and the container's processes read as `dvlf` on both
+# sides. The same pattern as artfl-platform-services, which runs as 358 with a `philo-web`
+# host account behind it. The obvious choice, 999, is systemd-coredump on the host, which
+# makes `ls -l` and `ps` actively misleading.
+RUN groupadd -g 480 dvlf && useradd -u 480 -g 480 -M -s /usr/sbin/nologin dvlf
 
 # The interpreter comes from uv rather than the distro, so it is pinned here and bumped
 # as a deliberate decision instead of moving with the base image.
@@ -75,6 +81,6 @@ COPY web_app.py datamodels.py words_of_the_day.json ./
 COPY --from=web /src/dist ./public/dist
 COPY entrypoint.sh /entrypoint.sh
 
-USER 999:999
+USER 480:480
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]
