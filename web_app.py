@@ -428,14 +428,21 @@ def query_headword(headword: str):
 
 
 @app.get("/")
-@app.get("/mot/{word}:path")
+@app.get("/mot/{word:path}")  # NB: {word:path}, not {word}:path - see below
 @app.get("/apropos")
 @app.get("/definition")
 @app.get("/exemple")
 @app.get("/synonyme")
 @app.get("/antonyme")
 def home():
-    """DVLF landing page"""
+    """DVLF landing page.
+
+    The /mot route was written as "/mot/{word}:path" from 2022 until 2026-09-07. That is a
+    typo for "{word:path}", but starlette 0.19 parsed it leniently and compiled it to
+    ^/mot/(?P<word>[^/]+)$ - which happened to be what was wanted, so it worked. Starlette
+    1.x compiles the same string correctly, to ^/mot/(?P<word>[^/]+):path$, and every deep
+    link to an entry 404s. Caught by the corpus comparison before it reached production.
+    """
     with open("public/dist/index.html", encoding="utf-8") as index_file:
         index_html = index_file.read()
     return HTMLResponse(index_html)

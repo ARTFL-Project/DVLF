@@ -48,7 +48,16 @@ RUN echo "rebuild: $REBUILD_DATE" \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       postgresql postgresql-contrib ca-certificates \
- && rm -rf /var/lib/apt/lists/* /var/lib/postgresql/*/main
+ && rm -rf /var/lib/apt/lists/* /var/lib/postgresql/*/main \
+ # Canonical's base image ships /usr/bin/pebble, their service manager for OCI images.
+ # Nothing here uses it - the entrypoint starts postgres and gunicorn directly - and it
+ # is a 10 MB Go binary that carried 8 HIGH CVEs on the first weekly scan, 2026-09-07.
+ && rm -f /usr/bin/pebble \
+ # The ssl-cert package (a postgresql dependency) drops a self-signed "snakeoil" key here.
+ # This cluster never speaks TLS - listen_addresses is empty - so the key is unused, and
+ # leaving it makes every scan report a secret that is not one. A report people learn to
+ # ignore is worse than no report.
+ && rm -f /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem
 
 # initdb calls getpwuid(), so the runtime uid has to exist in /etc/passwd. Nothing in
 # this image runs as root, so there is no gosu and no privilege drop at runtime.
